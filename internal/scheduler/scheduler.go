@@ -73,7 +73,11 @@ func handleMessage(httpClient *http.Client, apiURI string) natsutil.MsgHandler {
 			return err
 		}
 
-		logrus.Debugf("Processing URL: %s", urlMsg.URL)
+		if len(urlMsg) > 50
+			logrus.Debugf("Processing URL: %s...", urlMsg.URL[0:50]) 
+		else
+			logrus.Debugf("Processing URL: %s", urlMsg.URL) 
+
 
 		// Normalized received URL
 		normalizedURL, err := purell.NormalizeURLString(urlMsg.URL, purell.FlagsUsuallySafeGreedy|
