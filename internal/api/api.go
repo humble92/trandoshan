@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	tlog "github.com/creekorful/trandoshan/internal/log"
-	"github.com/elastic/go-elasticsearch/v7"
-	"github.com/elastic/go-elasticsearch/v7/esapi"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/gommon/log"
-	"github.com/urfave/cli/v2"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/creekorful/trandoshan/internal/log"
+	"github.com/elastic/go-elasticsearch/v7"
+	"github.com/elastic/go-elasticsearch/v7/esapi"
+	"github.com/labstack/echo/v4"
+	"github.com/urfave/cli/v2"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 var (
@@ -152,7 +155,21 @@ func addResource(es *elasticsearch.Client) echo.HandlerFunc {
 
 		c.Logger().Debugf("Saving resource %s", resourceDto.URL)
 
-		// TODO store on file system
+		client, err := mongo.NewClient(options.Client().ApplyURI())
+
+		ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+		if err != nil {
+			c.Logger().Errorf("Error connecting to mongodb")
+			return NoContent(http.StatusInternalServerError)
+		}
+		defer client.Disconnect(ctx)
+
+		db := client.Database("trandoshan")
+		collection := db.Collection("databases")
+
+		result, err := collection.InsertOne(ctx, bson.D{
+			"url": resourceDto.URL
+		})
 
 		// Create Elasticsearch document
 		doc := resourceIndex{

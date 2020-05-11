@@ -12,5 +12,6 @@ require (
 	github.com/sirupsen/logrus v1.5.0
 	github.com/urfave/cli/v2 v2.2.0
 	github.com/valyala/fasthttp v1.9.0
+	go.mongodb.org/mongo-driver v1.3.3
 	mvdan.cc/xurls/v2 v2.1.0
 )
