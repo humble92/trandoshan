@@ -14,7 +14,6 @@ import (
 	"github.com/elastic/go-elasticsearch/v7/esapi"
 	"github.com/labstack/echo/v4"
 	"github.com/urfave/cli/v2"
-	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -155,21 +154,26 @@ func addResource(es *elasticsearch.Client) echo.HandlerFunc {
 
 		c.Logger().Debugf("Saving resource %s", resourceDto.URL)
 
-		client, err := mongo.NewClient(options.Client().ApplyURI())
+		clientOptions := options.Client().ApplyURI("mongodb://localhost:27050")
 
-		ctx, _ := context.WithTimeout(context.Background(), 10*time.Second)
+		client, err := mongo.Connect(context.TODO(), clientOptions)
+
 		if err != nil {
-			c.Logger().Errorf("Error connecting to mongodb")
+			c.Logger().Errorf(err)
 			return NoContent(http.StatusInternalServerError)
 		}
-		defer client.Disconnect(ctx)
 
-		db := client.Database("trandoshan")
-		collection := db.Collection("databases")
+		err = client.Ping(context.TODO(), nil)
 
-		result, err := collection.InsertOne(ctx, bson.D{
-			"url": resourceDto.URL
-		})
+		if err != nil {
+			c.Logger().Errorf(err)
+			return NoContent(http.StatusInternalServerError)
+		}
+
+		c.Logger().Debug("Connected to mongo")
+		defer client.Disconnect(context.TODO())
+
+		collection := client.Database("trandoshan").Collection("crawledPages")
 
 		// Create Elasticsearch document
 		doc := resourceIndex{
@@ -178,6 +182,14 @@ func addResource(es *elasticsearch.Client) echo.HandlerFunc {
 			Title: extractTitle(resourceDto.Body),
 			Time:  time.Now(),
 		}
+
+		// Insert into mongo
+		insertResult, err := collection.InsertOne(context.TODO(), doc)
+		if err != nil {
+			c.Logger().Errorf(err)
+		}
+
+		c.Logger().Debug("Inserted new doc into mongo")
 
 		// Serialize document into json
 		docBytes, err := json.Marshal(&doc)
