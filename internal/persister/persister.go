@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
+
 	"github.com/creekorful/trandoshan/internal/api"
 	"github.com/creekorful/trandoshan/internal/log"
 	"github.com/creekorful/trandoshan/internal/natsutil"
@@ -11,7 +13,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
-	"net/http"
 )
 
 // GetApp return the persister app
@@ -84,7 +85,7 @@ func handleMessage(httpClient *http.Client, apiURI string) natsutil.MsgHandler {
 		}
 
 		url := fmt.Sprintf("%s/v1/resources", apiURI)
-		logrus.Tracef("Posting on API URL: %s", url)
+		logrus.Debugf("Posting on API URL: %s", url)
 
 		resp, err := httpClient.Post(url, "application/json", bytes.NewBuffer(body))
 		if err != nil || resp.StatusCode != 201 {

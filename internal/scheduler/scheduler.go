@@ -3,6 +3,10 @@ package scheduler
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	url2 "net/url"
+	"strings"
+
 	"github.com/PuerkitoBio/purell"
 	"github.com/creekorful/trandoshan/internal/api"
 	"github.com/creekorful/trandoshan/internal/log"
@@ -11,9 +15,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
-	"net/http"
-	url2 "net/url"
-	"strings"
 )
 
 // GetApp return the scheduler app
@@ -41,7 +42,6 @@ func GetApp() *cli.App {
 
 func execute(ctx *cli.Context) error {
 	log.ConfigureLogger(ctx)
-
 	logrus.Infof("Starting trandoshan-scheduler v%s", ctx.App.Version)
 
 	logrus.Debugf("Using NATS server at: %s", ctx.String("nats-uri"))
@@ -73,11 +73,11 @@ func handleMessage(httpClient *http.Client, apiURI string) natsutil.MsgHandler {
 			return err
 		}
 
-		if len(urlMsg) > 50
-			logrus.Debugf("Processing URL: %s...", urlMsg.URL[0:50]) 
-		else
-			logrus.Debugf("Processing URL: %s", urlMsg.URL) 
-
+		if len(urlMsg.URL) > 50 {
+			logrus.Debugf("Processing URL: %s...", urlMsg.URL[0:50])
+		} else {
+			logrus.Debugf("Processing URL: %s", urlMsg.URL)
+		}
 
 		// Normalized received URL
 		normalizedURL, err := purell.NormalizeURLString(urlMsg.URL, purell.FlagsUsuallySafeGreedy|
@@ -87,12 +87,12 @@ func handleMessage(httpClient *http.Client, apiURI string) natsutil.MsgHandler {
 			return fmt.Errorf("error while normalizing URL %s: %s", urlMsg.URL, err)
 		}
 
-		logrus.Tracef("Normalized URL: %s", normalizedURL)
+		logrus.Debugf("Normalized URL: %s", normalizedURL)
 
 		// Make sure URL is valid .onion
 		url, err := url2.Parse(normalizedURL)
 		if err != nil {
-			logrus.Errorf("Error while parsing URL: %s", err)
+			logrus.Errorf("Error while parsing URL: %s", normalizedURL)
 			return err
 		}
 
@@ -102,9 +102,9 @@ func handleMessage(httpClient *http.Client, apiURI string) natsutil.MsgHandler {
 		}
 
 		apiURL := fmt.Sprintf("%s/v1/resources?url=%s", apiURI, normalizedURL)
-		logrus.Tracef("Using API URL: %s", apiURL)
+		logrus.Debugf("Using API URL: %s", apiURL)
 
-		resp, err := httpClient.Get(apiURI)
+		resp, err := http.Get(apiURL)
 		if err != nil || resp.StatusCode != 200 {
 			logrus.Errorf("Error while searching URL: %s", err)
 			logrus.Errorf("Received status code: %d", resp.StatusCode)

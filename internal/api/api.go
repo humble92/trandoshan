@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"github.com/elastic/go-elasticsearch/v7"
 	"github.com/elastic/go-elasticsearch/v7/esapi"
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -38,6 +41,8 @@ type ResourceDto struct {
 	Time  time.Time `json:"time"`
 }
 
+var Collection string
+
 // GetApp return the api app
 func GetApp() *cli.App {
 	return &cli.App{
@@ -45,10 +50,15 @@ func GetApp() *cli.App {
 		Version: "0.0.1",
 		Usage:   "", // TODO
 		Flags: []cli.Flag{
-			tlog.GetLogFlag(),
+			log.GetLogFlag(),
 			&cli.StringFlag{
 				Name:     "elasticsearch-uri",
 				Usage:    "URI to the Elasticsearch server",
+				Required: true,
+			},
+			&cli.StringFlag{
+				Name:     "database_collection",
+				Usage:    "Name of collection to save records to",
 				Required: true,
 			},
 		},
@@ -59,41 +69,37 @@ func GetApp() *cli.App {
 func execute(ctx *cli.Context) error {
 	e := echo.New()
 	e.HideBanner = true
-
-	// Configure logger
-	switch ctx.String("log-level") {
-	case "debug":
-		e.Logger.SetLevel(log.DEBUG)
-	case "info":
-		e.Logger.SetLevel(log.INFO)
-	case "warn":
-		e.Logger.SetLevel(log.WARN)
-	case "error":
-		e.Logger.SetLevel(log.ERROR)
-	}
+	e.Debug = true
+	e.Logger.Level()
 
 	e.Logger.Infof("Starting trandoshan-api v%s", ctx.App.Version)
 
 	e.Logger.Debugf("Using elasticsearch server at: %s", ctx.String("elasticsearch-uri"))
+	e.Logger.Debugf("Using Mongo collection: %s", ctx.String("database_collection"))
+	Collection = ctx.String("database_collection")
 
 	// Create Elasticsearch client
 	es, err := elasticsearch.NewClient(elasticsearch.Config{Addresses: []string{ctx.String("elasticsearch-uri")}})
 	if err != nil {
-		e.Logger.Errorf("Error while creating elasticsearch client: %s", err)
+		logrus.Debugf("Error while creating elasticsearch client: %s", err)
 		return err
 	}
+
+	e.Use(middleware.Logger())
+	e.Use(middleware.Recover())
 
 	// Add endpoints
 	e.GET("/v1/resources", searchResources(es))
 	e.POST("/v1/resources", addResource(es))
 
-	e.Logger.Info("Successfully initialized trandoshan-api. Waiting for requests")
+	logrus.Debugf("Successfully initialized trandoshan-api. Waiting for requests")
 
 	return e.Start(":8080")
 }
 
 func searchResources(es *elasticsearch.Client) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		c.Logger().Debugf("Searching for %s", c.QueryParam("url"))
 		url := c.QueryParam("url")
 
 		var buf bytes.Buffer
@@ -152,28 +158,29 @@ func addResource(es *elasticsearch.Client) echo.HandlerFunc {
 			return c.NoContent(http.StatusUnprocessableEntity)
 		}
 
+		fmt.Printf("Saving resource %s", resourceDto.URL)
 		c.Logger().Debugf("Saving resource %s", resourceDto.URL)
 
-		clientOptions := options.Client().ApplyURI("mongodb://localhost:27050")
+		clientOptions := options.Client().ApplyURI("mongodb://192.168.166.3:27017")
 
 		client, err := mongo.Connect(context.TODO(), clientOptions)
 
 		if err != nil {
-			c.Logger().Errorf(err)
-			return NoContent(http.StatusInternalServerError)
+			c.Logger().Errorf("Error when connecting to mongo %s", err)
+			return c.NoContent(http.StatusInternalServerError)
 		}
 
 		err = client.Ping(context.TODO(), nil)
 
 		if err != nil {
-			c.Logger().Errorf(err)
-			return NoContent(http.StatusInternalServerError)
+			c.Logger().Errorf("Error when pinging mongo %s", err)
+			return c.NoContent(http.StatusInternalServerError)
 		}
 
 		c.Logger().Debug("Connected to mongo")
 		defer client.Disconnect(context.TODO())
 
-		collection := client.Database("trandoshan").Collection("crawledPages")
+		collection := client.Database("trandoshan").Collection(Collection)
 
 		// Create Elasticsearch document
 		doc := resourceIndex{
@@ -186,10 +193,10 @@ func addResource(es *elasticsearch.Client) echo.HandlerFunc {
 		// Insert into mongo
 		insertResult, err := collection.InsertOne(context.TODO(), doc)
 		if err != nil {
-			c.Logger().Errorf(err)
+			c.Logger().Errorf("Failed to insert into mongo %s", err)
 		}
 
-		c.Logger().Debug("Inserted new doc into mongo")
+		c.Logger().Debug("Inserted new doc into mongo %s", insertResult)
 
 		// Serialize document into json
 		docBytes, err := json.Marshal(&doc)

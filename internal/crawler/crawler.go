@@ -1,18 +1,22 @@
 package crawler
 
 import (
-	"crypto/tls"
+	"io/ioutil"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/creekorful/trandoshan/internal/log"
 	"github.com/creekorful/trandoshan/internal/natsutil"
 	"github.com/creekorful/trandoshan/pkg/proto"
 	"github.com/nats-io/nats.go"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
-	"github.com/valyala/fasthttp"
-	"github.com/valyala/fasthttp/fasthttpproxy"
+	"golang.org/x/net/proxy"
 	"mvdan.cc/xurls/v2"
-	"time"
 )
+
+type handleCrawl func(nc *nats.Conn, msg *nats.Msg) error
 
 // GetApp return the crawler app
 func GetApp() *cli.App {
@@ -32,6 +36,11 @@ func GetApp() *cli.App {
 				Usage:    "URI to the TOR SOCKS proxy",
 				Required: true,
 			},
+			&cli.IntFlag{
+				Name:     "crawler-count",
+				Usage:    "Number of crawlers to run",
+				Required: false,
+			},
 		},
 		Action: execute,
 	}
@@ -45,16 +54,16 @@ func execute(ctx *cli.Context) error {
 	logrus.Debugf("Using NATS server at: %s", ctx.String("nats-uri"))
 	logrus.Debugf("Using TOR proxy at: %s", ctx.String("tor-uri"))
 
-	// Create the HTTP client
-	httpClient := &fasthttp.Client{
-		// Use given TOR proxy to reach the hidden services
-		Dial: fasthttpproxy.FasthttpSocksDialer(ctx.String("tor-uri")),
-		// Disable SSL verification since we do not really care about this
-		TLSConfig:    &tls.Config{InsecureSkipVerify: true},
-		ReadTimeout:  time.Second * 5,
-		WriteTimeout: time.Second * 5,
-		Name:         "Mozilla/5.0 (Windows NT 10.0; rv:68.0) Gecko/20100101 Firefox/68.0",
+	dialer, err := proxy.SOCKS5("tcp", ctx.String("tor-uri"), nil, proxy.Direct)
+	if err != nil {
+		logrus.Errorf("Error creating Tor proxy: %s", err)
 	}
+
+	transport := &http.Transport{
+		Dial: dialer.Dial,
+	}
+
+	client := &http.Client{Transport: transport, Timeout: 8 * time.Second}
 
 	// Create the NATS subscriber
 	sub, err := natsutil.NewSubscriber(ctx.String("nats-uri"))
@@ -65,34 +74,74 @@ func execute(ctx *cli.Context) error {
 
 	logrus.Info("Successfully initialized trandoshan-crawler. Waiting for URLs")
 
-	if err := sub.QueueSubscribe(proto.URLTodoSubject, "crawlers", handleMessage(httpClient)); err != nil {
-		return err
+	if ctx.Int("crawler-count") != 0 {
+		sub.QueueSubscribeAsync(proto.URLTodoSubject, "crawlers", crawlerWorker, ctx.Int("crawler-count"), client)
+	} else {
+		if err := sub.QueueSubscribe(proto.URLTodoSubject, "crawlers", handleMessage(client)); err != nil {
+			return err
+		}
 	}
 
 	return nil
 }
 
-func handleMessage(httpClient *fasthttp.Client) natsutil.MsgHandler {
+// Creates a worker that will wait on jobs, used for async crawling
+func crawlerWorker(id int, jobs <-chan *nats.Msg, results chan<- int, httpClient *http.Client, nc *nats.Conn) {
+	messageHandler := handleMessage(httpClient)
+	for {
+		job := <-jobs
+
+		var urlMsg proto.URLTodoMsg
+		natsutil.ReadJSON(job, &urlMsg)
+		logrus.Debugf("Worker %d processing URL: %s", id, urlMsg.URL)
+
+		messageHandler(nc, job)
+
+		// Notifies a crawl was finished
+		results <- 0
+	}
+}
+
+func handleMessage(httpClient *http.Client) natsutil.MsgHandler {
 	return func(nc *nats.Conn, msg *nats.Msg) error {
 		var urlMsg proto.URLTodoMsg
 		if err := natsutil.ReadJSON(msg, &urlMsg); err != nil {
 			return err
 		}
 
-		logrus.Debugf("Processing URL: %s", urlMsg.URL)
+		var data *http.Response
+		var err error
 
-		// Query the website
-		_, bytes, err := httpClient.Get(nil, urlMsg.URL)
-		if err != nil {
-			logrus.Errorf("Error while querying website: %s", err)
-			return err
+		maxTries := 3
+		for i := 1; i <= maxTries; i++ {
+			// Query the website
+			data, err = httpClient.Get(urlMsg.URL)
+			if err != nil {
+
+				// Random TTL expired
+				if strings.Contains(err.Error(), "context deadline exceeded") {
+					if i == maxTries {
+						logrus.Errorf("Error while querying website: %s", err)
+						return err
+					} else {
+						// logrus.Errorf("Retrying URL %s after TTL expire", urlMsg.URL)
+						continue
+					}
+				}
+
+				if i == maxTries {
+					logrus.Errorf("Error while querying website: %s", err)
+					return err
+				}
+			}
 		}
-		body := string(bytes)
+
+		body, err := ioutil.ReadAll(data.Body)
 
 		// Publish resource body
 		res := proto.ResourceMsg{
 			URL:  urlMsg.URL,
-			Body: body,
+			Body: string(body),
 		}
 		if err := natsutil.PublishJSON(nc, proto.ResourceSubject, &res); err != nil {
 			logrus.Errorf("Error while publishing resource body: %s", err)
@@ -100,10 +149,14 @@ func handleMessage(httpClient *fasthttp.Client) natsutil.MsgHandler {
 
 		// Extract URLs
 		xu := xurls.Strict()
-		urls := xu.FindAllString(body, -1)
+		urls := xu.FindAllString(string(body), -1)
 
 		// Publish found URLs
 		for _, url := range urls {
+			if !strings.Contains(url, ".onion") || strings.Contains(url, ".jpg") || strings.Contains(url, ".css") || strings.Contains(url, ".png") || strings.Contains(url, ".gif") {
+				continue
+			}
+
 			logrus.Debugf("Found URL: %s", url)
 
 			if err := natsutil.PublishJSON(nc, proto.URLFoundSubject, &proto.URLFoundMsg{URL: url}); err != nil {

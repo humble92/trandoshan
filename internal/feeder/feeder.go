@@ -1,6 +1,9 @@
 package feeder
 
 import (
+	"bufio"
+	"os"
+
 	"github.com/creekorful/trandoshan/internal/log"
 	"github.com/creekorful/trandoshan/internal/natsutil"
 	"github.com/creekorful/trandoshan/pkg/proto"
@@ -25,7 +28,12 @@ func GetApp() *cli.App {
 			&cli.StringFlag{
 				Name:     "url",
 				Usage:    "URL to send to the crawler",
-				Required: true,
+				Required: false,
+			},
+			&cli.StringFlag{
+				Name:     "file",
+				Usage:    "File to send all urls to the crawler",
+				Required: false,
 			},
 		},
 		Action: execute,
@@ -47,13 +55,35 @@ func execute(ctx *cli.Context) error {
 	}
 	defer nc.Close()
 
-	// Publish the message
-	if err := natsutil.PublishJSON(nc, proto.URLTodoSubject, &proto.URLTodoMsg{URL: ctx.String("url")}); err != nil {
-		logrus.Errorf("Unable to publish URL: %s", err)
-		return err
-	}
+	if ctx.String("url") != "" {
+		// Publish single message
+		if err := natsutil.PublishJSON(nc, proto.URLTodoSubject, &proto.URLTodoMsg{URL: ctx.String("url")}); err != nil {
+			logrus.Errorf("Unable to publish URL: %s", err)
+			return err
+		}
 
-	logrus.Infof("URL %s successfully sent to the crawler", ctx.String("url"))
+		logrus.Infof("URL %s successfully sent to the crawler", ctx.String("url"))
+	} else if ctx.String("file") != "" {
+		// Publish all urls in file
+		file, err := os.Open(ctx.String("file"))
+
+		if err != nil {
+			logrus.Errorf("Failed to open file url file %s", err)
+			return err
+		}
+
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			if err := natsutil.PublishJSON(nc, proto.URLTodoSubject, &proto.URLTodoMsg{URL: scanner.Text()}); err != nil {
+				logrus.Errorf("Unable to publish URL: %s", err)
+			}
+
+			logrus.Infof("URL %s successfully sent to the crawler", ctx.String("url"))
+		}
+	} else {
+		// Did not specify single url or file
+		logrus.Errorf("Did not specify a url or file to start")
+	}
 
 	return nil
 }

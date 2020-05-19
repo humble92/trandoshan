@@ -4,7 +4,7 @@ services:
   nats:
     image: nats:2.1.6-alpine3.11
     logging:
-      driver: none
+      driver: json-file
   torproxy:
     image: dperson/torproxy:latest
     logging:
@@ -26,14 +26,20 @@ services:
       - 15004:5601
   crawler:
     image: trandoshan.io/crawler:latest
-    command: --log-level debug --nats-uri nats --tor-uri torproxy:9050
+    command: --log-level debug --nats-uri nats --tor-uri torproxy:9050 --crawler-count 3
     restart: always
     depends_on:
       - nats
       - torproxy
-  #feeder:
-  #  image: trandoshan.io/feeder:latest
-  #  command: --log-level debug --nats-uri nats --url https://www.facebookcorewwwi.onion
+      - api
+  feeder:
+   image: trandoshan.io/feeder:latest
+   command: --log-level debug --nats-uri nats --file /etc/urls/more_urls.txt
+   volumes:
+      - /home/bcit/urls:/etc/urls/
+   depends_on:
+    - crawler
+    - api
   scheduler:
     image: trandoshan.io/scheduler:latest
     command: --log-level debug --nats-uri nats --api-uri http://api:8080
@@ -49,7 +55,9 @@ services:
       - api
   api:
     image: trandoshan.io/api:latest
-    command: --log-level debug --elasticsearch-uri http://elasticsearch:9200
+    command: --log-level debug --elasticsearch-uri http://elasticsearch:9200 --database_collection trandoshan-crawled
     restart: always
+    ports:
+      - 8080:8080
     depends_on:
       - elasticsearch
