@@ -13,6 +13,8 @@ services:
     image: elasticsearch:7.5.1
     logging:
       driver: none
+    ports:
+      - 9200:9200
     environment:
       - discovery.type=single-node
       - JAVA_OPTS=-Xms2g -Xmx2g
@@ -34,7 +36,7 @@ services:
       - api
   feeder:
    image: trandoshan.io/feeder:latest
-   command: --log-level debug --nats-uri nats --file /etc/urls/more_urls.txt
+   command: --log-level debug --nats-uri nats --url https://www.facebookcorewwwi.onion
    volumes:
       - /home/bcit/urls:/etc/urls/
    depends_on:

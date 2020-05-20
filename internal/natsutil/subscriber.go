@@ -61,7 +61,7 @@ func (qs *Subscriber) QueueSubscribeAsync(subject, queue string, worker Worker, 
 	jobs := make(chan *nats.Msg, 1500)
 	results := make(chan int, 100)
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < workerCount; i++ {
 		go worker(i, jobs, results, httpClient, qs.nc)
 		logrus.Info("Starting worker id:", i)
 	}
